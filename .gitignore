@@ -1,0 +1,9 @@
+.ipynb_checkpoints
+*.jpg
+*.json
+*.txt
+*.pth
+*.mat
+*.png
+__pycache__
+*.db
