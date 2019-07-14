@@ -15,14 +15,26 @@ def agg_node(in_planes, out_planes):
 
 def smooth(in_planes, out_planes):
     return nn.Sequential(
-        nn.Conv2d(in_planes, out_planes, kernel_size=3, stride=1, padding=1),
+        nn.Conv2d(
+            in_planes, out_planes, kernel_size=3, stride=1,
+            #padding=1,
+            #padding_mode='circular',
+        ),
         nn.ReLU(),
     )
 
 def predict(in_planes, out_planes):
     return nn.Sequential(
-        nn.Conv2d(in_planes, out_planes, kernel_size=3, stride=1, padding=1),
-        nn.Sigmoid(),
+        nn.Conv2d(
+            in_planes,
+            out_planes,
+            kernel_size=3,
+            stride=1,
+            #padding=1,
+            #padding_mode='circular',
+        ),
+        nn.LeakyReLU(),
+        #nn.Sigmoid(),
     )
 
 def upshuffle(in_planes, out_planes, upscale_factor):

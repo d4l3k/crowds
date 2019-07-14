@@ -124,7 +124,7 @@ class CustomDataset(torch.utils.data.dataset.Dataset):
         self.ratio = (3. / 4., 4. / 3.)
         self.flip_chance = 0.5
         self.size = (480, 640)
-        self.density_size = (120, 160)
+        self.density_size = (116, 156)
         self.interpolation = Image.BILINEAR
 
     def __len__(self):

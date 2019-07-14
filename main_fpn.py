@@ -364,11 +364,7 @@ if __name__ == '__main__':
     elif args.optimizer == "sgd":
         optimizer = torch.optim.SGD(master_params, lr=lr, momentum=0.9)
 
-    rmse = RMSE()
-    depth_criterion = nn.MSELoss() #RMSE_log()
-    grad_criterion = GradLoss()
-    normal_criterion = NormalLoss()
-    eval_metric = nn.MSELoss() #RMSE_log()
+    criterion = nn.MSELoss()
 
     # resume
     if args.resume:
@@ -393,6 +389,61 @@ if __name__ == '__main__':
     grad_factor = 10.
     normal_factor = 1.
     scale_factor = 128.0
+    global_scale_factor = 0.0002
+
+    def train(epoch, dataloader, train):
+        global_loss_accum = 0
+        local_loss_accum = 0
+        mae_accum = 0
+        count = 0
+
+        mode_desc = "train" if train else "eval"
+        desc = "{} {}".format(mode_desc, epoch)
+        pbar = tqdm(dataloader, desc=desc)
+        for step, (img_cpu, density_cpu) in enumerate(pbar):
+            img = img_cpu.half().cuda()
+            density = density_cpu.half().cuda()
+
+            density_fake = i2d(img)
+            local_loss = criterion(density_fake, density)
+
+            sum_density = density.sum(dim=[1, 2, 3])
+            sum_density_fake = nn.functional.relu(density_fake.sum(dim=[1, 2, 3]))
+            global_loss = criterion(
+                sum_density_fake * global_scale_factor,
+                sum_density * global_scale_factor
+            )
+
+            loss = local_loss + global_loss
+
+            with torch.no_grad():
+                global_loss_accum += global_loss
+                local_loss_accum += local_loss
+                mae_accum += (sum_density_fake - sum_density).float().abs().sum()
+                count += len(img_cpu)
+
+            if train:
+                scaled_loss = scale_factor * loss.float()
+
+                i2d.zero_grad()
+                scaled_loss.backward()
+                model_grads_to_master_grads(model_params, master_params)
+
+                for param in master_params:
+                    param.grad.data.mul_(1./scale_factor)
+
+                optimizer.step()
+                master_to_model_params(master_params, model_params)
+
+            pbar.set_description(
+                "{} (global_loss={:.6f} local_loss={:.6f} mae={:.1f})".format(
+                    desc,
+                    global_loss_accum/count,
+                    local_loss_accum/count,
+                    mae_accum/count
+                ),
+                refresh=False,
+            )
 
     for epoch in range(args.start_epoch, args.max_epochs):
 
@@ -403,78 +454,21 @@ if __name__ == '__main__':
             adjust_learning_rate(optimizer, args.lr_decay_gamma)
             lr *= args.lr_decay_gamma
 
-        for step, (img_cpu, z_cpu) in enumerate(tqdm(train_dataloader, desc="train")):
-            start = time.time()
-            img = img_cpu.half().cuda()
-            z = z_cpu.half().cuda()
-
-            z_fake = i2d(img)
-            depth_loss = depth_criterion(z_fake, z)
-
-            #grad_real, grad_fake = imgrad_yx(z), imgrad_yx(z_fake)
-            #grad_loss = grad_criterion(grad_fake, grad_real)     * grad_factor * (epoch>3)
-            #normal_loss = normal_criterion(grad_fake, grad_real) * normal_factor * (epoch>7)
-            grad_loss = 0
-            normal_loss = 0
-
-            loss = depth_loss + grad_loss + normal_loss
-            scaled_loss = scale_factor * loss.float()
-
-            i2d.zero_grad()
-            scaled_loss.backward()
-            model_grads_to_master_grads(model_params, master_params)
-
-            for param in master_params:
-                param.grad.data.mul_(1./scale_factor)
-
-            optimizer.step()
-            master_to_model_params(master_params, model_params)
-
-            end = time.time()
-
-            # info
-            if step % args.disp_interval == 0:
-
-                print("[epoch %2d][iter %4d] loss: %.6f time: %f" % (epoch, step, loss, end-start))
+        train(epoch, train_dataloader, train=True)
 
         # save model
-        save_name = os.path.join(args.output_dir, 'i2d_{}_{}.pth'.format(args.session, epoch))
+        save_name = os.path.join(
+            args.output_dir, 'i2d_{}_{}.pth'.format(args.session, epoch))
 
-        torch.save({'epoch': epoch+1,
-                    'model': i2d.state_dict(),
-#                     'optimizer': optimizer.state_dict(),
-                   },
-                   save_name)
+        torch.save({
+            'epoch': epoch+1,
+            'model': i2d.state_dict(),
+        }, save_name)
 
         print('save model: {}'.format(save_name))
-        print('time elapsed: %fs' % (end - start))
 
-        if epoch % 1 == 0:
-            # setting to eval mode
-            i2d.eval()
+        # setting to eval mode
+        i2d.eval()
 
-            with torch.no_grad():
-              print('evaluating...')
-
-              eval_loss = 0
-              rmse_accum = 0
-              count = 0
-              for i, (img, z) in enumerate(tqdm(eval_dataloader, desc="eval")):
-
-                  img = img.half().cuda()
-                  z = z.cuda()
-
-                  z_fake = i2d(img).float()
-                  depth_loss = float(img.size(0)) * depth_criterion(z_fake, z)
-                  rmse_accum += (z_fake - z).sum(dim=[1, 2, 3]).abs().sum()
-                  eval_loss += depth_loss
-                  count += float(img.size(0))
-
-            print("[epoch %2d] RMSE: %.4f MAE: %.4f" \
-                            % (epoch, torch.sqrt(eval_loss/count), rmse_accum/count))
-            with open('val.txt', 'a') as f:
-                f.write("[epoch %2d] RMSE_log: %.4f RMSE: %.4f\n" \
-                            % (epoch, torch.sqrt(eval_loss/count), torch.sqrt(rmse_accum/count)))
-
-
-
+        with torch.no_grad():
+            train(epoch, eval_dataloader, train=False)
